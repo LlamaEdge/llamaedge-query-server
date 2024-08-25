@@ -158,9 +158,9 @@ pub(crate) async fn query_handler(
             return error::bad_request(msg);
         }
     };
-    let query = match request_search_config.get("api_key") {
-        Some(api_key) => match api_key.as_str() {
-            Some(key) => key.to_string(),
+    let query = match bytes_json.get("query") {
+        Some(query) => match query.as_str() {
+            Some(q) => q.to_string(),
             None => {
                 let msg = "The query supplied is not a String.\n";
                 error!(target:"query_handler", "{}", msg);

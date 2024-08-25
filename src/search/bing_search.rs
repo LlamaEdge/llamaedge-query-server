@@ -45,9 +45,9 @@ pub fn bing_parser(
     let mut results = Vec::new();
     for result in web_pages_object {
         let current_result = SearchResult {
-            url: result["url"].to_string(),
-            site_name: result["siteName"].to_string(),
-            text_content: result["snippet"].to_string(),
+            url: result["url"].as_str().unwrap_or("").to_string(),
+            site_name: result["siteName"].as_str().unwrap_or("").to_string(),
+            text_content: result["snippet"].as_str().unwrap_or("").to_string(),
         };
         results.push(current_result);
     }

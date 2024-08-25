@@ -33,9 +33,9 @@ pub fn tavily_parser(
 
     for result in results_array {
         let current_result = SearchResult {
-            url: result["url"].to_string(),
-            site_name: result["title"].to_string(),
-            text_content: result["content"].to_string(),
+            url: result["url"].as_str().unwrap_or("").to_string(),
+            site_name: result["title"].as_str().unwrap_or("").to_string(),
+            text_content: result["content"].as_str().unwrap_or("").to_string(),
         };
         results.push(current_result)
     }

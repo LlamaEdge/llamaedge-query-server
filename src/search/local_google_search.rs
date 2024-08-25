@@ -29,9 +29,9 @@ pub fn local_google_parser(
 
     for result in results_array {
         let current_result = SearchResult {
-            url: result["url"].to_string(),
-            site_name: result["siteName"].to_string(),
-            text_content: result["textContent"].to_string(),
+            url: result["url"].as_str().unwrap_or("").to_string(),
+            site_name: result["siteName"].as_str().unwrap_or("").to_string(),
+            text_content: result["textContent"].as_str().unwrap_or("").to_string(),
         };
         results.push(current_result)
     }
