@@ -10,7 +10,7 @@ pub(crate) async fn query_handler(
     cli: &crate::Cli,
     query_type: crate::backend::QueryType,
 ) -> Response<Body> {
-    info!(target: "query_handler", "Handling the incoming decision request.");
+    info!(target: "stdout", "Handling the incoming decision request.");
 
     let bytes = match hyper::body::to_bytes(req.into_body()).await {
         Ok(bytes) => bytes,
@@ -19,7 +19,7 @@ pub(crate) async fn query_handler(
                 "Error while converting request body into bytes: {}\n",
                 e.to_string()
             );
-            error!(target: "query_handler", "{}", msg);
+            error!(target: "stdout", "{}", msg);
             return error::internal_server_error(msg);
         }
     };
@@ -30,7 +30,7 @@ pub(crate) async fn query_handler(
                 "Error while converting request body into json object: {}",
                 e.to_string()
             );
-            error!(target: "query_handler", "{}", msg);
+            error!(target: "stdout", "{}", msg);
             return error::internal_server_error(msg);
         }
     };
@@ -38,7 +38,7 @@ pub(crate) async fn query_handler(
         Some(object) => object,
         None => {
             let msg = "Unable to extract search_config object from request.\n";
-            error!(target: "query_handler", "{}", msg);
+            error!(target: "stdout", "{}", msg);
             return error::internal_server_error(msg);
         }
     };
@@ -48,13 +48,13 @@ pub(crate) async fn query_handler(
     if cli.server {
         if search_backend == SearchBackends::LocalSearchServer {
             let msg = "The \"backend local_search_server\" is only allowed on servers configured without --server.\n";
-            error!(target: "query_handler", "{}", msg);
+            error!(target: "stdout", "{}", msg);
             return error::bad_request(msg);
         }
         if query_type == QueryType::Summarize {
             let msg =
                 "Summary generation endpoint is only available on servers configured without --server.\n";
-            error!(target: "query_handler", "{}", msg);
+            error!(target: "stdout", "{}", msg);
             return error::bad_request(msg);
         }
     }
@@ -154,7 +154,7 @@ pub(crate) async fn query_handler(
         },
         SearchBackends::Unknown => {
             let msg = "Unknown backend mentioned.\nUsage: tavily, bing, local_search_server.\n";
-            error!(target: "query_handler", "{}", msg);
+            error!(target: "stdout", "{}", msg);
             return error::bad_request(msg);
         }
     };
@@ -183,7 +183,7 @@ pub(crate) async fn query_handler(
                 "Error while generating response from LLM.\n{}\n",
                 e.to_string()
             );
-            error!(target: "query_handler", "{}", msg);
+            error!(target: "stdout", "{}", msg);
             return error::internal_server_error(msg);
         }
     };
@@ -287,7 +287,7 @@ pub(crate) async fn query_handler(
                         let msg =
                             "Unknown backend mentioned.\nUsage: tavily, bing, local_search_server\n"
                                 .to_string();
-                        error!(target: "query_handler", "{}", msg);
+                        error!(target: "stdout", "{}", msg);
                         return error::bad_request(msg);
                     }
                 };
@@ -385,7 +385,7 @@ pub(crate) async fn query_handler(
                         let msg =
                             "unknown backend mentioned.\nUsage: tavily, bing, local_search_server"
                                 .to_string();
-                        error!(target: "query_handler", "{}", msg);
+                        error!(target: "stdout", "{}", msg);
                         return error::bad_request(msg);
                     }
                 };
@@ -412,14 +412,14 @@ pub(crate) async fn query_handler(
             let err_msg = format!("failed to build a response. Reason: {}", e);
 
             // log
-            error!(target: "query_handler", "{}", &err_msg);
+            error!(target: "stdout", "{}", &err_msg);
 
             error::internal_server_error(err_msg)
         }
     };
 
     // log
-    info!(target: "query_handler", "Replying to consultation.");
+    info!(target: "stdout", "Replying to consultation.");
 
     res
 }
@@ -509,7 +509,7 @@ async fn consult(query: String, model_name: String) -> Result<ConsultResponse, e
         .build();
 
     // serlialize and log input
-    info!(target: "consult", "search request: \n\n{:?}\n", request);
+    info!(target: "stdout", "search request: \n\n{:?}\n", request);
 
     let consultation_result: ChatCompletionObject = match llama_core::chat::chat(&mut request).await
     {
@@ -519,19 +519,19 @@ async fn consult(query: String, model_name: String) -> Result<ConsultResponse, e
                     // serialize chat completion object
                     let consultation_result =
                         serde_json::to_string(&chat_completion_object).unwrap();
-                    info!(target: "consult", "consultation_result: \n\n{}\n", consultation_result);
+                    info!(target: "stdout", "consultation_result: \n\n{}\n", consultation_result);
                     chat_completion_object
                 }
                 Either::Left(_) => {
                     let msg = "streaming mode is unsupported".to_string();
-                    error!(target: "consult", "{}", msg);
+                    error!(target: "stdout", "{}", msg);
                     return Err(error::ServerError::ConsulationError(msg));
                 }
             }
         }
         Err(e) => {
             let msg = e.to_string();
-            error!(target: "consult", "{}", msg);
+            error!(target: "stdout", "{}", msg);
             return Err(error::ServerError::ConsulationError(msg));
         }
     };
@@ -545,26 +545,26 @@ async fn consult(query: String, model_name: String) -> Result<ConsultResponse, e
                     Some(tool_call) => tool_call.clone(),
                     None => {
                         let msg = format!("Empty tool call message.\n{:#?}", consultation_result);
-                        error!(target: "consult", "{}", msg);
+                        error!(target: "stdout", "{}", msg);
                         return Err(error::ServerError::ConsulationError(msg));
                     }
                 }
             } else {
                 let msg = format!("No tool call message.\n{:#?}", consultation_result);
-                error!(target: "consult", "{}", msg);
+                error!(target: "stdout", "{}", msg);
                 return Err(error::ServerError::ConsulationError(msg));
             }
         }
         None => {
             let msg = format!("No messages found.\n{:#?}", consultation_result);
-            error!(target: "consult", "{}", msg);
+            error!(target: "stdout", "{}", msg);
             return Err(error::ServerError::ConsulationError(msg));
         }
     };
 
     if tool_call.ty != "function" || tool_call.function.name != "search_required" {
         let msg = format!("Invalid tool call response:\n\n{:#?}\n", tool_call);
-        error!(target: "consult", "{}", msg);
+        error!(target: "stdout", "{}", msg);
         return Err(error::ServerError::ConsulationError(msg));
     }
 
@@ -573,18 +573,18 @@ async fn consult(query: String, model_name: String) -> Result<ConsultResponse, e
             Ok(v) => v,
             Err(_) => {
                 let msg = "Could not deserialize tool call arguments".to_string();
-                error!(target: "consult", "{}", msg);
+                error!(target: "stdout", "{}", msg);
                 return Err(error::ServerError::ConsulationError(msg));
             }
         };
     if !arguments["search_required"].is_boolean() {
         let msg = format!("Invalid argument type: search_required");
-        error!(target: "consult", "{}", msg);
+        error!(target: "stdout", "{}", msg);
         return Err(error::ServerError::ConsulationError(msg));
     }
     if arguments["search_required"].as_bool().unwrap() && arguments["query"].is_null() {
         let msg = "invalid argument: 'query' cannot be null".to_string();
-        error!(target: "consult", "{}", msg);
+        error!(target: "stdout", "{}", msg);
         return Err(error::ServerError::ConsulationError(msg));
     }
 
