@@ -4,8 +4,10 @@ extern crate log;
 mod backend;
 mod error;
 mod search;
+mod utils;
 
 use crate::error::ServerError;
+use anyhow::Result;
 use chat_prompts::PromptTemplateType;
 use clap::Parser;
 use hyper::{
@@ -17,6 +19,9 @@ use hyper::{
 use llama_core::MetadataBuilder;
 use once_cell::sync::OnceCell;
 use std::path::PathBuf;
+use utils::LogLevel;
+
+type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 const DEFAULT_SOCKET_ADDRESS: &str = "0.0.0.0:8080";
 // To make the CLI accessible from the request functions, as it cannot implement the "Copy" trait
@@ -74,9 +79,6 @@ struct Cli {
     /// Socket address of LlamaEdge API Server instance
     #[arg(long, default_value = DEFAULT_SOCKET_ADDRESS)]
     socket_addr: String,
-    /// The prompt for the LLM to answer
-    #[arg(long, default_value = "Who was Robert Oppenheimer?")]
-    search_prompt: String,
     /// Deprecated. Print prompt strings to stdout
     #[arg(long)]
     log_prompts: bool,
@@ -103,6 +105,21 @@ struct Cli {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), ServerError> {
+    // get the environment variable `RUST_LOG`
+    let rust_log = std::env::var("RUST_LOG").unwrap_or_default().to_lowercase();
+    let (_, log_level) = match rust_log.is_empty() {
+        true => ("stdout", LogLevel::Info),
+        false => match rust_log.split_once("=") {
+            Some((target, level)) => (target, level.parse().unwrap_or(LogLevel::Info)),
+            None => ("stdout", rust_log.parse().unwrap_or(LogLevel::Info)),
+        },
+    };
+
+    // set global logger
+    wasi_logger::Logger::install().expect("failed to install wasi_logger::Logger");
+    log::set_max_level(log_level.into());
+
+    // parse the commandline arguments
     let cli = Cli::parse();
 
     // number of tokens to predict
@@ -156,7 +173,7 @@ async fn main() -> Result<(), ServerError> {
     // initialize the core context
     if let Err(e) = llama_core::init_core_context(Some(&[metadata_chat]), None) {
         let msg = format!("Failed to initialize core context: {}", e.to_string());
-        error!(target: "init_core_context", "{}", msg);
+        error!(target: "stdout", "{}", msg);
         return Err(error::ServerError::Operation(msg));
     }
 
@@ -169,12 +186,13 @@ async fn main() -> Result<(), ServerError> {
     CLI.set(cli)
         .map_err(|_| ServerError::Operation("Failed to set `CLI`.".to_owned()))?;
     // log socket address
-    info!(target: "server_config", "socket_address: {}", addr.to_string());
+    info!(target: "stdout", "socket_address: {}", addr.to_string());
+
     let new_service = make_service_fn(move |conn: &AddrStream| {
         // log socket address
-        info!(target: "connection", "remote_addr: {}, local_addr: {}", conn.remote_addr().to_string(), conn.local_addr().to_string());
+        info!(target: "stdout", "remote_addr: {}, local_addr: {}", conn.remote_addr().to_string(), conn.local_addr().to_string());
 
-        async move { Ok::<_, hyper::Error>(service_fn(move |req| handle_request(req))) }
+        async move { Ok::<_, Error>(service_fn(move |req| handle_request(req))) }
     });
     let server = Server::bind(&addr).serve(new_service);
 
@@ -189,7 +207,7 @@ async fn handle_request(req: Request<Body>) -> Result<Response<Body>, hyper::Err
         Some(cli) => cli,
         None => {
             let msg = "Failed to obtain SEARCH_CONFIG. Was it set?".to_string();
-            error!(target: "insert_search_results", "{}", &msg);
+            error!(target: "stdout", "{}", &msg);
 
             return Ok(error::internal_server_error(msg));
         }
@@ -216,9 +234,9 @@ async fn handle_request(req: Request<Body>) -> Result<Response<Body>, hyper::Err
                 .parse()
                 .unwrap();
 
-            info!(target: "request", "method: {}, endpoint: {}, http_version: {}, size: {}", method, path, version, size);
+            info!(target: "stdout", "method: {}, endpoint: {}, http_version: {}, size: {}", method, path, version, size);
         } else {
-            info!(target: "request", "method: {}, endpoint: {}, http_version: {}", method, path, version);
+            info!(target: "stdout", "method: {}, endpoint: {}, http_version: {}", method, path, version);
         }
     }
 
@@ -242,7 +260,7 @@ async fn handle_request(req: Request<Body>) -> Result<Response<Body>, hyper::Err
             let response_is_client_error = status_code.is_client_error();
             let response_is_server_error = status_code.is_server_error();
 
-            info!(target: "response", "version: {}, body_size: {}, status: {}, is_informational: {}, is_success: {}, is_redirection: {}, is_client_error: {}, is_server_error: {}", response_version, response_body_size, response_status, response_is_informational, response_is_success, response_is_redirection, response_is_client_error, response_is_server_error);
+            info!(target: "stdout", "version: {}, body_size: {}, status: {}, is_informational: {}, is_success: {}, is_redirection: {}, is_client_error: {}, is_server_error: {}", response_version, response_body_size, response_status, response_is_informational, response_is_success, response_is_redirection, response_is_client_error, response_is_server_error);
         } else {
             let response_version = format!("{:?}", response.version());
             let response_body_size: u64 = response.body().size_hint().lower();
@@ -253,7 +271,7 @@ async fn handle_request(req: Request<Body>) -> Result<Response<Body>, hyper::Err
             let response_is_client_error = status_code.is_client_error();
             let response_is_server_error = status_code.is_server_error();
 
-            error!(target: "response", "version: {}, body_size: {}, status: {}, is_informational: {}, is_success: {}, is_redirection: {}, is_client_error: {}, is_server_error: {}", response_version, response_body_size, response_status, response_is_informational, response_is_success, response_is_redirection, response_is_client_error, response_is_server_error);
+            error!(target: "stdout", "version: {}, body_size: {}, status: {}, is_informational: {}, is_success: {}, is_redirection: {}, is_client_error: {}, is_server_error: {}", response_version, response_body_size, response_status, response_is_informational, response_is_success, response_is_redirection, response_is_client_error, response_is_server_error);
         }
     }
 

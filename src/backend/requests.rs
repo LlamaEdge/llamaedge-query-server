@@ -178,8 +178,11 @@ pub(crate) async fn query_handler(
     let consultation_response: ConsultResponse = match consult(query, cli.model_name.clone()).await
     {
         Ok(cr) => cr,
-        Err(_) => {
-            let msg = "Error while generating response from LLM.\n";
+        Err(e) => {
+            let msg = format!(
+                "Error while generating response from LLM.\n{}\n",
+                e.to_string()
+            );
             error!(target: "query_handler", "{}", msg);
             return error::internal_server_error(msg);
         }
@@ -429,14 +432,7 @@ async fn consult(query: String, model_name: String) -> Result<ConsultResponse, e
 
     // create a system message
     let system_message = ChatCompletionRequestMessage::System(ChatCompletionSystemMessage::new(
-            r##"
-            You are an intent classification model. Your goal is to determine whether a given user query can only be answered with additional information from a google search. Use the search_required tool call for this.
-
-            Instructions:
-
-                For each query, assign an appropriate intent:
-                    `true` if the query would typically need real-time data, specific information retrieval, or content that is not likely to be pre-known. Generate the search term for the query.
-                    `false` if the query can be answered based on general knowledge, static facts, or content that can be reasonably assumed to be within the model's scope."##.to_string(),
+            r##"You are an intent classification model. Your goal is to determine whether a given user query can only be answered with additional information from a google search. Always use the search_required function to let the user know if search is required."##.to_string(),
         None,
     ));
 
@@ -460,7 +456,7 @@ async fn consult(query: String, model_name: String) -> Result<ConsultResponse, e
                     Box::new(JSONSchemaDefine {
                         schema_type: Some(JSONSchemaType::Boolean),
                         description: Some(
-                            "Whether an internet search is required to answer the query."
+                            "Whether an internet search is required to answer the query. Always use this. set to either true or false."
                                 .to_string(),
                         ),
                         enum_values: None,
@@ -540,12 +536,34 @@ async fn consult(query: String, model_name: String) -> Result<ConsultResponse, e
         }
     };
 
-    println!("{:?}", consultation_result);
+    println!("{:#?}", consultation_result);
     // extract and validate tool call. There should only be one system call (one query => one call)
-    let tool_call: ToolCall = consultation_result.choices[0].message.tool_calls[0].clone();
+    let tool_call: ToolCall = match consultation_result.choices.get(0) {
+        Some(choice) => {
+            if choice.finish_reason == endpoints::common::FinishReason::tool_calls {
+                match choice.message.tool_calls.get(0) {
+                    Some(tool_call) => tool_call.clone(),
+                    None => {
+                        let msg = format!("Empty tool call message.\n{:#?}", consultation_result);
+                        error!(target: "consult", "{}", msg);
+                        return Err(error::ServerError::ConsulationError(msg));
+                    }
+                }
+            } else {
+                let msg = format!("No tool call message.\n{:#?}", consultation_result);
+                error!(target: "consult", "{}", msg);
+                return Err(error::ServerError::ConsulationError(msg));
+            }
+        }
+        None => {
+            let msg = format!("No messages found.\n{:#?}", consultation_result);
+            error!(target: "consult", "{}", msg);
+            return Err(error::ServerError::ConsulationError(msg));
+        }
+    };
 
     if tool_call.ty != "function" || tool_call.function.name != "search_required" {
-        let msg = format!("Invalid tool call response:\n\n{:?}\n", tool_call);
+        let msg = format!("Invalid tool call response:\n\n{:#?}\n", tool_call);
         error!(target: "consult", "{}", msg);
         return Err(error::ServerError::ConsulationError(msg));
     }
