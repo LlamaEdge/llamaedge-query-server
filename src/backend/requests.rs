@@ -4,6 +4,8 @@ use endpoints::chat::*;
 use hyper::{Body, Request, Response};
 use llama_core::search::*;
 
+type SerializedSearchInput = Box<dyn erased_serde::Serialize + Sync + Send>;
+
 /// Simply retrun whether the query requires an internet search.
 pub(crate) async fn query_handler(
     req: Request<Body>,
@@ -34,130 +36,7 @@ pub(crate) async fn query_handler(
             return error::internal_server_error(msg);
         }
     };
-    let request_search_config = match bytes_json.get("search_config") {
-        Some(object) => object,
-        None => {
-            let msg = "Unable to extract search_config object from request.\n";
-            error!(target: "stdout", "{}", msg);
-            return error::internal_server_error(msg);
-        }
-    };
-    let search_backend =
-        SearchBackends::from(bytes_json["backend"].as_str().unwrap_or("").to_string());
 
-    if cli.server {
-        if search_backend == SearchBackends::LocalSearchServer {
-            let msg = "The \"backend local_search_server\" is only allowed on servers configured without --server.\n";
-            error!(target: "stdout", "{}", msg);
-            return error::bad_request(msg);
-        }
-        if query_type == QueryType::Summarize {
-            let msg =
-                "Summary generation endpoint is only available on servers configured without --server.\n";
-            error!(target: "stdout", "{}", msg);
-            return error::bad_request(msg);
-        }
-    }
-
-    // set the search backend according the user's requirement.
-    let search_config = match search_backend {
-        SearchBackends::Tavily => SearchConfig {
-            search_engine: "tavily".to_string(),
-            max_search_results: request_search_config["max_search_results"]
-                .as_u64()
-                .unwrap_or(cli.max_search_results as u64)
-                .min(u8::max as u64) as u8,
-            size_limit_per_result: request_search_config["size_limit_per_result"]
-                .as_u64()
-                .unwrap_or(cli.size_per_search_result as u64)
-                .min(u16::max as u64) as u16,
-            endpoint: "https://api.tavily.com/search".to_owned(),
-            content_type: ContentType::JSON,
-            output_content_type: ContentType::JSON,
-            method: "POST".to_string(),
-            additional_headers: None,
-            parser: tavily_search::tavily_parser,
-            summarization_prompts: None,
-            summarize_ctx_size: None,
-        },
-        SearchBackends::Bing => {
-            // Bing Web Search API expects the api key in request headers.
-            let mut additional_headers = std::collections::HashMap::new();
-            let api_key = match request_search_config.get("api_key") {
-                Some(api_key) => match api_key.as_str() {
-                    Some(key) => key,
-                    None => {
-                        let msg = "invalid Bing API key supplied.\n";
-                        error!(target:"query_handler", "{}", msg);
-                        return error::internal_server_error(msg);
-                    }
-                },
-                None => {
-                    let msg = "no Bing API key supplied.\n";
-                    error!(target:"query_handler", "{}", msg);
-                    return error::bad_request(msg);
-                }
-            };
-            additional_headers.insert("Ocp-Apim-Subscription-Key".to_string(), api_key.to_string());
-
-            SearchConfig {
-                search_engine: "bing".to_string(),
-                max_search_results: request_search_config
-                    .get("max_search_results")
-                    .unwrap_or(&serde_json::Value::from(u64::MAX))
-                    .as_u64()
-                    .unwrap_or(cli.max_search_results as u64)
-                    .min(u8::MAX as u64) as u8,
-                size_limit_per_result: request_search_config
-                    .get("size_limit_per_result")
-                    .unwrap_or(&serde_json::Value::from(u64::MAX))
-                    .as_u64()
-                    .unwrap_or(cli.size_per_search_result as u64)
-                    .min(u16::MAX as u64) as u16,
-                endpoint: "https://api.bing.microsoft.com/v7.0/search".to_owned(),
-                content_type: ContentType::JSON,
-                output_content_type: ContentType::JSON,
-                method: "GET".to_string(),
-                additional_headers: Some(additional_headers),
-                parser: bing_search::bing_parser,
-                summarization_prompts: None,
-                summarize_ctx_size: None,
-            }
-        }
-        SearchBackends::LocalSearchServer => SearchConfig {
-            search_engine: "google".to_string(),
-            max_search_results: request_search_config
-                .get("max_search_results")
-                .unwrap_or(&serde_json::Value::from(u64::MAX))
-                .as_u64()
-                .unwrap_or(cli.max_search_results as u64)
-                .min(u8::MAX as u64) as u8,
-            size_limit_per_result: request_search_config
-                .get("size_limit_per_result")
-                .unwrap_or(&serde_json::Value::from(u64::MAX))
-                .as_u64()
-                .unwrap_or(cli.size_per_search_result as u64)
-                .min(u16::MAX as u64) as u16,
-            endpoint: request_search_config
-                .get("endpoint")
-                .unwrap_or(&serde_json::Value::from("https://localhost:3000/search"))
-                .as_str()
-                .unwrap()
-                .to_string(),
-            content_type: ContentType::JSON,
-            output_content_type: ContentType::JSON,
-            method: "POST".to_string(),
-            additional_headers: None,
-            parser: bing_search::bing_parser,
-            summarization_prompts: None,
-            summarize_ctx_size: None,
-        },
-        SearchBackends::Unknown => {
-            let msg = "Unknown backend mentioned.\nUsage: tavily, bing, local_search_server.\n";
-            error!(target: "stdout", "{}", msg);
-            return error::bad_request(msg);
-        }
-    };
     let query = match bytes_json.get("query") {
         Some(query) => match query.as_str() {
             Some(q) => q.to_string(),
@@ -174,6 +53,10 @@ pub(crate) async fn query_handler(
         }
     };
 
+    //the response bod
+    let body: String;
+
+    // consult with the LLM until the appropriate response is received.
     let consultation_response: ConsultResponse;
     loop {
         match consult(query.clone(), cli.model_name.clone()).await {
@@ -195,205 +78,227 @@ pub(crate) async fn query_handler(
             }
         }
     }
-    //the response body
-    let body: String;
 
-    // generate the actual response body based on the requested level of response detail.
-    match query_type {
-        // just make a decision on whether to search the internet and return the needed query.
-        QueryType::Decision => {
-            body = (serde_json::json!({
-                "decision": consultation_response.decision.clone(),
-                "query": consultation_response.query.unwrap_or("null".to_string())
-            }))
-            .to_string();
+    if query_type == QueryType::Decision {
+        body = (serde_json::json!({
+            "decision": consultation_response.decision.clone(),
+            "query": consultation_response.query.unwrap_or("null".to_string())
+        }))
+        .to_string();
+    } else {
+        let request_search_config = match bytes_json.get("search_config") {
+            Some(object) => object,
+            None => {
+                let msg = "Unable to extract search_config object from request.\n";
+                error!(target: "stdout", "{}", msg);
+                return error::internal_server_error(msg);
+            }
+        };
+        let search_backend =
+            SearchBackends::from(bytes_json["backend"].as_str().unwrap_or("").to_string());
+
+        if cli.server {
+            if search_backend == SearchBackends::LocalSearchServer {
+                let msg = "The \"backend local_search_server\" is only allowed on servers configured without --server.\n";
+                error!(target: "stdout", "{}", msg);
+                return error::bad_request(msg);
+            }
+            if query_type == QueryType::Summarize {
+                let msg =
+            "Summary generation endpoint is only available on servers configured without --server.\n";
+                error!(target: "stdout", "{}", msg);
+                return error::bad_request(msg);
+            }
         }
-        // make a decision and perform the internet search if needed
-        QueryType::Complete => {
-            let computed_query = consultation_response
-                .query
-                .clone()
-                .unwrap_or("".to_string());
-            let search_output: SearchOutput;
 
-            if !consultation_response.decision {
-                body = (serde_json::json!({
-                    "decision": consultation_response.decision.clone(),
-                    "query": consultation_response.query.clone().unwrap_or("null".to_string())
-                }))
-                .to_string();
-            } else {
-                match search_backend {
-                    SearchBackends::Tavily => {
-                        let search_input = tavily_search::TavilySearchInput {
-                            api_key: match request_search_config.get("api_key") {
-                                Some(api_key) => match api_key.as_str() {
-                                    Some(key) => key.to_string(),
-                                    None => {
-                                        let msg = "Invalid Tavily API key supplied.\n";
-                                        error!(target:"query_handler", "{}", msg);
-                                        return error::bad_request(msg);
-                                    }
-                                },
-                                None => {
-                                    let msg = "no Tavily API key supplied.\n";
-                                    error!(target:"query_handler", "{}", msg);
-                                    return error::internal_server_error(msg);
-                                }
-                            },
-                            include_answer: false,
-                            include_images: false,
-                            query: computed_query,
-                            max_results: search_config.max_search_results,
-                            include_raw_content: false,
-                            search_depth: "advanced".to_string(),
-                        };
-                        search_output = match search_config.perform_search(&search_input).await {
-                            Ok(so) => so,
-                            Err(e) => {
-                                return error::internal_server_error(format!(
-                                    "Failed to perform internet search: {}",
-                                    e.to_string()
-                                ));
-                            }
-                        };
-                    }
-                    SearchBackends::Bing => {
-                        let search_input = bing_search::BingSearchInput {
-                            count: search_config.max_search_results,
-                            q: computed_query,
-                            responseFilter: "Webpages".to_string(),
-                        };
-                        search_output = match search_config.perform_search(&search_input).await {
-                            Ok(so) => so,
-                            Err(e) => {
-                                return error::internal_server_error(format!(
-                                    "Failed to perform internet search: {}",
-                                    e.to_string()
-                                ));
-                            }
-                        };
-                    }
-                    SearchBackends::LocalSearchServer => {
-                        let search_input = local_google_search::LocalGoogleSearchInput {
-                            term: computed_query,
-                            engine: "google".to_string(),
-                            maxSearchResults: search_config.max_search_results,
-                        };
-                        search_output = match search_config.perform_search(&search_input).await {
-                            Ok(so) => so,
-                            Err(e) => {
-                                return error::internal_server_error(format!(
-                                    "Failed to perform internet search: {}",
-                                    e.to_string()
-                                ));
-                            }
-                        };
-                    }
-                    SearchBackends::Unknown => {
-                        let msg =
-                            "Unknown backend mentioned.\nUsage: tavily, bing, local_search_server\n"
-                                .to_string();
-                        error!(target: "stdout", "{}", msg);
+        // set the search backend according the user's requirement.
+        let search_config = match search_backend {
+            SearchBackends::Tavily => SearchConfig {
+                search_engine: "tavily".to_string(),
+                max_search_results: request_search_config["max_search_results"]
+                    .as_u64()
+                    .unwrap_or(cli.max_search_results as u64)
+                    .min(u8::MAX as u64) as u8,
+                size_limit_per_result: request_search_config["size_limit_per_result"]
+                    .as_u64()
+                    .unwrap_or(cli.size_per_search_result as u64)
+                    .min(u16::MAX as u64) as u16,
+                endpoint: "https://api.tavily.com/search".to_owned(),
+                content_type: ContentType::JSON,
+                output_content_type: ContentType::JSON,
+                method: "POST".to_string(),
+                additional_headers: None,
+                parser: tavily_search::tavily_parser,
+                summarization_prompts: None,
+                summarize_ctx_size: None,
+            },
+            SearchBackends::Bing => {
+                // Bing Web Search API expects the api key in request headers.
+                let mut additional_headers = std::collections::HashMap::new();
+                let api_key = match request_search_config.get("api_key") {
+                    Some(api_key) => match api_key.as_str() {
+                        Some(key) => key,
+                        None => {
+                            let msg = "invalid Bing API key supplied.\n";
+                            error!(target:"query_handler", "{}", msg);
+                            return error::internal_server_error(msg);
+                        }
+                    },
+                    None => {
+                        let msg = "no Bing API key supplied.\n";
+                        error!(target:"query_handler", "{}", msg);
                         return error::bad_request(msg);
                     }
                 };
+                additional_headers
+                    .insert("Ocp-Apim-Subscription-Key".to_string(), api_key.to_string());
 
+                SearchConfig {
+                    search_engine: "bing".to_string(),
+                    max_search_results: request_search_config["max_search_results"]
+                        .as_u64()
+                        .unwrap_or(cli.max_search_results as u64)
+                        .min(u8::MAX as u64) as u8,
+                    size_limit_per_result: request_search_config["size_limit_per_result"]
+                        .as_u64()
+                        .unwrap_or(cli.size_per_search_result as u64)
+                        .min(u16::MAX as u64) as u16,
+                    endpoint: "https://api.bing.microsoft.com/v7.0/search".to_owned(),
+                    content_type: ContentType::JSON,
+                    output_content_type: ContentType::JSON,
+                    method: "GET".to_string(),
+                    additional_headers: Some(additional_headers),
+                    parser: bing_search::bing_parser,
+                    summarization_prompts: None,
+                    summarize_ctx_size: None,
+                }
+            }
+            SearchBackends::LocalSearchServer => SearchConfig {
+                search_engine: "google".to_string(),
+                max_search_results: request_search_config
+                    .get("max_search_results")
+                    .unwrap_or(&serde_json::Value::from(u64::MAX))
+                    .as_u64()
+                    .unwrap_or(cli.max_search_results as u64)
+                    .min(u8::MAX as u64) as u8,
+                size_limit_per_result: request_search_config
+                    .get("size_limit_per_result")
+                    .unwrap_or(&serde_json::Value::from(u64::MAX))
+                    .as_u64()
+                    .unwrap_or(cli.size_per_search_result as u64)
+                    .min(u16::MAX as u64) as u16,
+                endpoint: request_search_config
+                    .get("endpoint")
+                    .unwrap_or(&serde_json::Value::from("https://localhost:3000/search"))
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+                content_type: ContentType::JSON,
+                output_content_type: ContentType::JSON,
+                method: "POST".to_string(),
+                additional_headers: None,
+                parser: bing_search::bing_parser,
+                summarization_prompts: None,
+                summarize_ctx_size: None,
+            },
+            SearchBackends::Unknown => {
+                let msg = "Unknown backend mentioned.\nUsage: tavily, bing, local_search_server.\n";
+                error!(target: "stdout", "{}", msg);
+                return error::bad_request(msg);
+            }
+        };
+
+        // search only happens when it is required, so `consulation_response.query` being unwrapped to "" implies search is
+        // not required.
+        let computed_query = consultation_response
+            .query
+            .clone()
+            .unwrap_or("".to_string());
+
+        let search_input: SerializedSearchInput;
+
+        search_input = match search_backend {
+            SearchBackends::Bing => Box::new(bing_search::BingSearchInput {
+                count: search_config.max_search_results,
+                q: computed_query,
+                responseFilter: "Webpages".to_string(),
+            }),
+            SearchBackends::Tavily => Box::new(tavily_search::TavilySearchInput {
+                api_key: match request_search_config.get("api_key") {
+                    Some(api_key) => match api_key.as_str() {
+                        Some(key) => key.to_string(),
+                        None => {
+                            let msg = "Invalid Tavily API key supplied.\n";
+                            error!(target:"query_handler", "{}", msg);
+                            return error::bad_request(msg);
+                        }
+                    },
+                    None => {
+                        let msg = "no Tavily API key supplied.\n";
+                        error!(target:"query_handler", "{}", msg);
+                        return error::internal_server_error(msg);
+                    }
+                },
+                include_answer: false,
+                include_images: false,
+                query: computed_query,
+                max_results: search_config.max_search_results,
+                include_raw_content: false,
+                search_depth: "advanced".to_string(),
+            }),
+            SearchBackends::LocalSearchServer => {
+                Box::new(local_google_search::LocalGoogleSearchInput {
+                    term: computed_query,
+                    engine: "google".to_string(),
+                    maxSearchResults: search_config.max_search_results,
+                })
+            }
+            SearchBackends::Unknown => {
+                let msg = "Unknown backend mentioned.\nUsage: tavily, bing, local_search_server\n"
+                    .to_string();
+                error!(target: "stdout", "{}", msg);
+                return error::bad_request(msg);
+            }
+        };
+
+        if query_type == QueryType::Complete {
+            if !consultation_response.decision {
+                body = (serde_json::json!({
+                    "decision": false,
+                    "query": serde_json::Value::Null
+                }))
+                .to_string();
+            } else {
+                let search_output = match search_config.perform_search(&search_input).await {
+                    Ok(so) => so,
+                    Err(e) => {
+                        return error::internal_server_error(format!(
+                            "Failed to perform internet search: {}",
+                            e.to_string()
+                        ));
+                    }
+                };
                 body = (serde_json::json!({
                     "decision": consultation_response.decision.clone(),
                     "results": search_output.results
                 }))
                 .to_string();
             }
-        }
-        // make a decision and perform the internet search if needed
-        QueryType::Summarize => {
-            let computed_query = consultation_response
-                .query
-                .clone()
-                .unwrap_or("".to_string());
-            let search_output: String;
-
+        } else {
             if !consultation_response.decision {
                 body = (serde_json::json!({
-                    "decision": consultation_response.decision.clone(),
-                    "results": consultation_response.query.clone().unwrap_or("null".to_string())
+                    "decision": false,
+                    "query": serde_json::Value::Null
                 }))
                 .to_string();
             } else {
-                match search_backend {
-                    SearchBackends::Tavily => {
-                        let search_input = tavily_search::TavilySearchInput {
-                            api_key: match request_search_config.get("api_key") {
-                                Some(api_key) => match api_key.as_str() {
-                                    Some(key) => key.to_string(),
-                                    None => {
-                                        let msg = "Invalid Tavily API key supplied.\n";
-                                        error!(target:"query_handler", "{}", msg);
-                                        return error::bad_request(msg);
-                                    }
-                                },
-                                None => {
-                                    let msg = "No Tavily API key supplied\n";
-                                    error!(target:"query_handler", "{}", msg);
-                                    return error::internal_server_error(msg);
-                                }
-                            },
-                            include_answer: false,
-                            include_images: false,
-                            query: computed_query,
-                            max_results: search_config.max_search_results,
-                            include_raw_content: false,
-                            search_depth: "advanced".to_string(),
-                        };
-                        search_output = match search_config.summarize_search(&search_input).await {
-                            Ok(so) => so,
-                            Err(e) => {
-                                return error::internal_server_error(format!(
-                                    "Failed to perform internet search: {}",
-                                    e.to_string()
-                                ));
-                            }
-                        };
-                    }
-                    SearchBackends::Bing => {
-                        let search_input = bing_search::BingSearchInput {
-                            count: search_config.max_search_results,
-                            q: computed_query,
-                            responseFilter: "Webpages".to_string(),
-                        };
-                        search_output = match search_config.summarize_search(&search_input).await {
-                            Ok(so) => so,
-                            Err(e) => {
-                                return error::internal_server_error(format!(
-                                    "Failed to perform internet search: {}",
-                                    e.to_string()
-                                ));
-                            }
-                        };
-                    }
-                    SearchBackends::LocalSearchServer => {
-                        let search_input = local_google_search::LocalGoogleSearchInput {
-                            term: computed_query,
-                            engine: "google".to_string(),
-                            maxSearchResults: search_config.max_search_results,
-                        };
-                        search_output = match search_config.summarize_search(&search_input).await {
-                            Ok(so) => so,
-                            Err(e) => {
-                                return error::internal_server_error(format!(
-                                    "Failed to perform internet search: {}",
-                                    e.to_string()
-                                ));
-                            }
-                        };
-                    }
-                    SearchBackends::Unknown => {
-                        let msg =
-                            "unknown backend mentioned.\nUsage: tavily, bing, local_search_server"
-                                .to_string();
-                        error!(target: "stdout", "{}", msg);
-                        return error::bad_request(msg);
+                let search_output = match search_config.summarize_search(&search_input).await {
+                    Ok(so) => so,
+                    Err(e) => {
+                        return error::internal_server_error(format!(
+                            "Failed to perform internet search: {}",
+                            e.to_string()
+                        ));
                     }
                 };
 
@@ -404,7 +309,7 @@ pub(crate) async fn query_handler(
                 .to_string();
             }
         }
-    };
+    }
 
     let result = Response::builder()
         .header("Access-Control-Allow-Origin", "*")
@@ -417,10 +322,7 @@ pub(crate) async fn query_handler(
         Ok(response) => response,
         Err(e) => {
             let err_msg = format!("failed to build a response. Reason: {}", e);
-
-            // log
             error!(target: "stdout", "{}", &err_msg);
-
             error::internal_server_error(err_msg)
         }
     };

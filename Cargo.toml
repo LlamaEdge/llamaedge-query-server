@@ -28,6 +28,7 @@ url = "^2.5"
 uuid = { version = "1.4", features = ["v4", "fast-rng", "macro-diagnostics"] }
 walkdir = "2.5.0"
 wasi-logger = { version = "0.1.2", features = ["kv"] }
+erased-serde = "0.4.5"
 
 [patch.crates-io]
 socket2 = { git = "https://github.com/second-state/socket2.git", branch = "v0.5.x" }

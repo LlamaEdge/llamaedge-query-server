@@ -96,7 +96,7 @@ struct Cli {
     #[arg(long, default_value = "5")]
     max_search_results: u8,
     /// Fallback: Size limit per result to be enforced in case a user query goes overboard.
-    #[arg(long, default_value = "600")]
+    #[arg(long, default_value = "400")]
     size_per_search_result: u16,
     /// Whether the server is running locally on a user's machine. enables local-search-server
     /// usage and summariztion.
