@@ -174,20 +174,27 @@ pub(crate) async fn query_handler(
         }
     };
 
-    // extract query
-    let consultation_response: ConsultResponse = match consult(query, cli.model_name.clone()).await
-    {
-        Ok(cr) => cr,
-        Err(e) => {
-            let msg = format!(
-                "Error while generating response from LLM.\n{}\n",
-                e.to_string()
-            );
-            error!(target: "stdout", "{}", msg);
-            return error::internal_server_error(msg);
-        }
-    };
+    let consultation_response: ConsultResponse;
+    loop {
+        match consult(query.clone(), cli.model_name.clone()).await {
+            Ok(cr) => {
+                consultation_response = cr;
+                break;
+            }
+            Err(e) => {
+                if let error::ServerError::RetrySignal(_) = e {
+                    continue;
+                }
 
+                let msg = format!(
+                    "Error while generating response from LLM.\n{}\n",
+                    e.to_string()
+                );
+                error!(target: "stdout", "{}", msg);
+                return error::internal_server_error(msg);
+            }
+        }
+    }
     //the response body
     let body: String;
 
@@ -440,7 +447,7 @@ async fn consult(query: String, model_name: String) -> Result<ConsultResponse, e
 
     //create a user message
     let user_message = ChatCompletionRequestMessage::User(ChatCompletionUserMessage::new(
-        ChatCompletionUserMessageContent::Text(query),
+        ChatCompletionUserMessageContent::Text(query.clone()),
         None,
     ));
 
@@ -493,7 +500,7 @@ async fn consult(query: String, model_name: String) -> Result<ConsultResponse, e
     };
 
     // create a chat completion request
-    let mut request = ChatCompletionRequestBuilder::new(model_name, messages)
+    let mut request = ChatCompletionRequestBuilder::new(model_name.clone(), messages)
         // no stream required.
         .enable_stream(false)
         .with_n_choices(1)
@@ -536,56 +543,78 @@ async fn consult(query: String, model_name: String) -> Result<ConsultResponse, e
         }
     };
 
-    println!("{:#?}", consultation_result);
     // extract and validate tool call. There should only be one system call (one query => one call)
+    //
+    // whenever there is no extractable tool call, simply run the query until there is.
     let tool_call: ToolCall = match consultation_result.choices.get(0) {
         Some(choice) => {
             if choice.finish_reason == endpoints::common::FinishReason::tool_calls {
                 match choice.message.tool_calls.get(0) {
                     Some(tool_call) => tool_call.clone(),
                     None => {
-                        let msg = format!("Empty tool call message.\n{:#?}", consultation_result);
-                        error!(target: "stdout", "{}", msg);
-                        return Err(error::ServerError::ConsulationError(msg));
+                        let msg = format!(
+                            "FinishReason: tool_calls, but empty tool call message. Retrying\n{:#?}",
+                            consultation_result
+                        );
+                        warn!(target: "stdout", "{}", msg);
+                        return Err(error::ServerError::RetrySignal(msg));
                     }
                 }
             } else {
-                let msg = format!("No tool call message.\n{:#?}", consultation_result);
+                let msg = format!(
+                    "FinishReason: not tool_calls. Retrying for tool_call.\n{:#?}",
+                    consultation_result
+                );
                 error!(target: "stdout", "{}", msg);
-                return Err(error::ServerError::ConsulationError(msg));
+                return Err(error::ServerError::RetrySignal(msg));
             }
         }
         None => {
             let msg = format!("No messages found.\n{:#?}", consultation_result);
             error!(target: "stdout", "{}", msg);
-            return Err(error::ServerError::ConsulationError(msg));
+            return Err(error::ServerError::RetrySignal(msg));
         }
     };
 
+    // Invalid function name. Retry.
     if tool_call.ty != "function" || tool_call.function.name != "search_required" {
-        let msg = format!("Invalid tool call response:\n\n{:#?}\n", tool_call);
+        let msg = format!(
+            "Invalid tool call response. Retrying.\n\n{:#?}\n",
+            tool_call
+        );
         error!(target: "stdout", "{}", msg);
-        return Err(error::ServerError::ConsulationError(msg));
+        return Err(error::ServerError::RetrySignal(msg));
     }
 
+    // The function was found, but it is malformed. Retry.
     let arguments: serde_json::Value =
         match serde_json::from_str(tool_call.function.arguments.as_str()) {
             Ok(v) => v,
             Err(_) => {
-                let msg = "Could not deserialize tool call arguments".to_string();
+                let msg = format!(
+                    "Could not deserialize tool call arguments. Retrying.\n\n{:#?}\n",
+                    tool_call
+                );
                 error!(target: "stdout", "{}", msg);
-                return Err(error::ServerError::ConsulationError(msg));
+                return Err(error::ServerError::RetrySignal(msg));
             }
         };
+
+    // search_required has the wrong type. Retry.
     if !arguments["search_required"].is_boolean() {
-        let msg = format!("Invalid argument type: search_required");
+        let msg = format!(
+            "Invalid argument type: search_required. Retrying.\n\n{:#?}\n",
+            arguments
+        );
         error!(target: "stdout", "{}", msg);
-        return Err(error::ServerError::ConsulationError(msg));
+        return Err(error::ServerError::RetrySignal(msg));
     }
+
+    // no query was supplied where search is required. Retry.
     if arguments["search_required"].as_bool().unwrap() && arguments["query"].is_null() {
-        let msg = "invalid argument: 'query' cannot be null".to_string();
+        let msg = "invalid argument: 'query' cannot be null. Retrying.\n".to_string();
         error!(target: "stdout", "{}", msg);
-        return Err(error::ServerError::ConsulationError(msg));
+        return Err(error::ServerError::RetrySignal(msg));
     }
 
     // tool call validated. build and return ConsultResponse.

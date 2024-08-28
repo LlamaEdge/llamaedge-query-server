@@ -90,4 +90,7 @@ pub enum ServerError {
     /// Conversion error when converting to SearchOutput
     #[error("{0}")]
     SearchConversionError(String),
+    /// An error to signal the calling function to retry the LLM consultation.
+    #[error("{0}")]
+    RetrySignal(String),
 }

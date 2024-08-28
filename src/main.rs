@@ -19,6 +19,7 @@ use hyper::{
 use llama_core::MetadataBuilder;
 use once_cell::sync::OnceCell;
 use std::path::PathBuf;
+use tokio::net::TcpListener;
 use utils::LogLevel;
 
 type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -194,7 +195,12 @@ async fn main() -> Result<(), ServerError> {
 
         async move { Ok::<_, Error>(service_fn(move |req| handle_request(req))) }
     });
-    let server = Server::bind(&addr).serve(new_service);
+
+    let tcp_listener = TcpListener::bind(addr).await.unwrap();
+    let server = Server::from_tcp(tcp_listener.into_std().unwrap())
+        .unwrap()
+        .serve(new_service);
+    //let server = Server::bind(&addr).serve(new_service);
 
     match server.await {
         Ok(_) => Ok(()),
