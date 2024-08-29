@@ -3,8 +3,8 @@
 <!-- code_chunk_output -->
 
 - [LlamaEdge Query Server](#llamaedge-query-api-server)
-  - [Quick Start](#quick-start)
   - [Introduction](#introduction)
+  - [Quick Start](#quick-start)
     - [Endpoints](#endpoints)
       - [`POST /query/decide`](#post-querydecide)
       - [`POST /query/complete`](#post-querycomplete)
@@ -14,7 +14,7 @@
 
 ## Introduction
 
-The LlamaEdge Query Server allows a chatbot to determine whether a chatbot user-query requires an internet search to answer. Additionally, it can also complete these searches as well as perform summarization on them (in local mode).
+The LlamaEdge Query Server allows a chatbot to determine whether a user query requires an internet search to answer. Additionally, it can also complete these searches as well as perform summarization on them (non `--server` mode).
 
 ## Quick Start
 
@@ -180,8 +180,6 @@ Options:
           Deprecated. Print statistics to stdout
       --log-all
           Deprecated. Print all log information to stdout
-      --summarize
-          Whether or not summarization is enabled on the server. Overrides the choice in the user query
       --max-search-results <MAX_SEARCH_RESULTS>
           Fallback: Maximum search results to be enforced in case a user query goes overboard [default: 5]
       --size-per-search-result <SIZE_PER_SEARCH_RESULT>
