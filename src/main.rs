@@ -24,7 +24,7 @@ use utils::LogLevel;
 
 type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
 
-const DEFAULT_SOCKET_ADDRESS: &str = "0.0.0.0:8080";
+const DEFAULT_SOCKET_ADDRESS: &str = "0.0.0.0:8081";
 // To make the CLI accessible from the request functions, as it cannot implement the "Copy" trait
 // required for the `async move`
 pub(crate) static CLI: OnceCell<Cli> = OnceCell::new();

@@ -97,18 +97,11 @@ pub(crate) async fn query_handler(
         let search_backend =
             SearchBackends::from(bytes_json["backend"].as_str().unwrap_or("").to_string());
 
-        if cli.server {
-            if search_backend == SearchBackends::LocalSearchServer {
-                let msg = "The \"backend local_search_server\" is only allowed on servers configured without --server.\n";
-                error!(target: "stdout", "{}", msg);
-                return error::bad_request(msg);
-            }
-            if query_type == QueryType::Summarize {
-                let msg =
+        if cli.server && query_type == QueryType::Summarize {
+            let msg =
             "Summary generation endpoint is only available on servers configured without --server.\n";
-                error!(target: "stdout", "{}", msg);
-                return error::bad_request(msg);
-            }
+            error!(target: "stdout", "{}", msg);
+            return error::bad_request(msg);
         }
 
         // set the search backend according the user's requirement.
@@ -173,34 +166,6 @@ pub(crate) async fn query_handler(
                     summarize_ctx_size: None,
                 }
             }
-            SearchBackends::LocalSearchServer => SearchConfig {
-                search_engine: "google".to_string(),
-                max_search_results: request_search_config
-                    .get("max_search_results")
-                    .unwrap_or(&serde_json::Value::from(u64::MAX))
-                    .as_u64()
-                    .unwrap_or(cli.max_search_results as u64)
-                    .min(u8::MAX as u64) as u8,
-                size_limit_per_result: request_search_config
-                    .get("size_limit_per_result")
-                    .unwrap_or(&serde_json::Value::from(u64::MAX))
-                    .as_u64()
-                    .unwrap_or(cli.size_per_search_result as u64)
-                    .min(u16::MAX as u64) as u16,
-                endpoint: request_search_config
-                    .get("endpoint")
-                    .unwrap_or(&serde_json::Value::from("https://localhost:3000/search"))
-                    .as_str()
-                    .unwrap()
-                    .to_string(),
-                content_type: ContentType::JSON,
-                output_content_type: ContentType::JSON,
-                method: "POST".to_string(),
-                additional_headers: None,
-                parser: bing_search::bing_parser,
-                summarization_prompts: None,
-                summarize_ctx_size: None,
-            },
             SearchBackends::Unknown => {
                 let msg = "Unknown backend mentioned.\nUsage: tavily, bing, local_search_server.\n";
                 error!(target: "stdout", "{}", msg);
@@ -246,13 +211,6 @@ pub(crate) async fn query_handler(
                 include_raw_content: false,
                 search_depth: "advanced".to_string(),
             }),
-            SearchBackends::LocalSearchServer => {
-                Box::new(local_google_search::LocalGoogleSearchInput {
-                    term: computed_query,
-                    engine: "google".to_string(),
-                    maxSearchResults: search_config.max_search_results,
-                })
-            }
             SearchBackends::Unknown => {
                 let msg = "Unknown backend mentioned.\nUsage: tavily, bing, local_search_server\n"
                     .to_string();
