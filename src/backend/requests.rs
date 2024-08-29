@@ -17,10 +17,7 @@ pub(crate) async fn query_handler(
     let bytes = match hyper::body::to_bytes(req.into_body()).await {
         Ok(bytes) => bytes,
         Err(e) => {
-            let msg = format!(
-                "Error while converting request body into bytes: {}\n",
-                e.to_string()
-            );
+            let msg = format!("Error while converting request body into bytes: {}\n", e);
             error!(target: "stdout", "{}", msg);
             return error::internal_server_error(msg);
         }
@@ -30,7 +27,7 @@ pub(crate) async fn query_handler(
         Err(e) => {
             let msg = format!(
                 "Error while converting request body into json object: {}",
-                e.to_string()
+                e
             );
             error!(target: "stdout", "{}", msg);
             return error::internal_server_error(msg);
@@ -69,10 +66,7 @@ pub(crate) async fn query_handler(
                     continue;
                 }
 
-                let msg = format!(
-                    "Error while generating response from LLM.\n{}\n",
-                    e.to_string()
-                );
+                let msg = format!("Error while generating response from LLM.\n{}\n", e);
                 error!(target: "stdout", "{}", msg);
                 return error::internal_server_error(msg);
             }
@@ -180,9 +174,7 @@ pub(crate) async fn query_handler(
             .clone()
             .unwrap_or("".to_string());
 
-        let search_input: SerializedSearchInput;
-
-        search_input = match search_backend {
+        let search_input: SerializedSearchInput = match search_backend {
             SearchBackends::Bing => Box::new(bing_search::BingSearchInput {
                 count: search_config.max_search_results,
                 q: computed_query,
@@ -232,7 +224,7 @@ pub(crate) async fn query_handler(
                     Err(e) => {
                         return error::internal_server_error(format!(
                             "Failed to perform internet search: {}",
-                            e.to_string()
+                            e
                         ));
                     }
                 };
@@ -242,30 +234,28 @@ pub(crate) async fn query_handler(
                 }))
                 .to_string();
             }
+        } else if !consultation_response.decision {
+            body = (serde_json::json!({
+                "decision": false,
+                "query": serde_json::Value::Null
+            }))
+            .to_string();
         } else {
-            if !consultation_response.decision {
-                body = (serde_json::json!({
-                    "decision": false,
-                    "query": serde_json::Value::Null
-                }))
-                .to_string();
-            } else {
-                let search_output = match search_config.summarize_search(&search_input).await {
-                    Ok(so) => so,
-                    Err(e) => {
-                        return error::internal_server_error(format!(
-                            "Failed to perform internet search: {}",
-                            e.to_string()
-                        ));
-                    }
-                };
+            let search_output = match search_config.summarize_search(&search_input).await {
+                Ok(so) => so,
+                Err(e) => {
+                    return error::internal_server_error(format!(
+                        "Failed to perform internet search: {}",
+                        e
+                    ));
+                }
+            };
 
-                body = (serde_json::json!({
-                    "decision": consultation_response.decision.clone(),
-                    "results": search_output
-                }))
-                .to_string();
-            }
+            body = (serde_json::json!({
+                "decision": consultation_response.decision.clone(),
+                "results": search_output
+            }))
+            .to_string();
         }
     }
 
@@ -406,10 +396,10 @@ async fn consult(query: String, model_name: String) -> Result<ConsultResponse, e
     // extract and validate tool call. There should only be one system call (one query => one call)
     //
     // whenever there is no extractable tool call, simply run the query until there is.
-    let tool_call: ToolCall = match consultation_result.choices.get(0) {
+    let tool_call: ToolCall = match consultation_result.choices.first() {
         Some(choice) => {
             if choice.finish_reason == endpoints::common::FinishReason::tool_calls {
-                match choice.message.tool_calls.get(0) {
+                match choice.message.tool_calls.first() {
                     Some(tool_call) => tool_call.clone(),
                     None => {
                         let msg = format!(

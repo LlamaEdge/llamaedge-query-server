@@ -170,7 +170,7 @@ async fn main() -> Result<(), ServerError> {
     .build();
     // initialize the core context
     if let Err(e) = llama_core::init_core_context(Some(&[metadata_chat]), None) {
-        let msg = format!("Failed to initialize core context: {}", e.to_string());
+        let msg = format!("Failed to initialize core context: {}", e);
         error!(target: "stdout", "{}", msg);
         return Err(error::ServerError::Operation(msg));
     }
@@ -245,7 +245,7 @@ async fn handle_request(req: Request<Body>) -> Result<Response<Body>, hyper::Err
 
     let response = match root_path.as_str() {
         "/echo" => Response::new(Body::from("echo test")),
-        "/query" => backend::handle_query_request(req, &cli).await,
+        "/query" => backend::handle_query_request(req, cli).await,
         _ => error::not_implemented(),
     };
 
