@@ -89,9 +89,6 @@ struct Cli {
     /// Deprecated. Print all log information to stdout
     #[arg(long)]
     log_all: bool,
-    /// Whether or not summarization is enabled on the server. Overrides the choice in the user query.
-    #[arg(long)]
-    summarize: bool,
     /// Fallback: Maximum search results to be enforced in case a user query goes overboard.
     #[arg(long, default_value = "5")]
     max_search_results: u8,
